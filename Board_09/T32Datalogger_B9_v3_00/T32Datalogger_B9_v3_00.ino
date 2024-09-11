@@ -33,13 +33,7 @@
 //INITIALIZATION
 /*---------------------------------------------------------*/
 
-// #define DO_DEBUG
 
-/*-------------------*/
-// Code Version
-/*-------------------*/
-
-#define CODE_VERSION "B9_v3.00"
 
 /*-------------------*/
 // Libraries
@@ -70,9 +64,33 @@
 #include "MPU6050.h"           // accelerometer lib  https://github.com/ElectronicCats/mpu6050
 #include <FreqMeasureMulti.h>  // lib for speed sensor https://github.com/PaulStoffregen/FreqMeasureMulti
 
+/*
+FreqMeasureMulti.h
+private, add
+	volatile uint32_t head = 0;
+	volatile uint32_t tail = 0;
+	volatile uint32_t value = 0;
+
+FreqMeasureMulti.cpp
+line 112 head (type is now global)
+line 113 tail (type is now global)
+line 120 head (type is now global)
+line 121 tail (type is now global)
+
+line 125 value (type is now global)
+*/
+
 /*-------------------*/
 //Constant Definitions
 /*-------------------*/
+
+// #define DO_DEBUG
+
+/*-------------------*/
+// Code Version
+/*-------------------*/
+
+#define CODE_VERSION "B9_v3.00"
 
 #define SEALEVELPRESSURE_HPA 1013.25
 #define GRAPH_X 45
@@ -177,9 +195,9 @@ bool DrawGraph = true;
 uint16_t EnergyPoints[100];
 
 uint16_t BLEnergy[93] = { 0, 8, 16, 22, 28, 36, 42, 48, 54, 62, 68, 74, 80, 88, 94, 102, 108, 116, 124, 130, 138, 144, 150, 158,
-                          164, 172, 178, 186, 192, 200, 206, 214, 220, 226, 234, 240, 248, 254, 260, 268, 274, 282, 288, 294, 
-                          302, 308, 314, 322, 328, 334, 340, 348, 354, 360, 368, 374, 380, 386, 394, 400, 406, 412, 418, 426, 
-                          432, 438, 444, 450, 456, 464, 470, 476, 482, 488, 494, 500, 506, 512, 518, 524, 530, 536, 542, 548, 
+                          164, 172, 178, 186, 192, 200, 206, 214, 220, 226, 234, 240, 248, 254, 260, 268, 274, 282, 288, 294,
+                          302, 308, 314, 322, 328, 334, 340, 348, 354, 360, 368, 374, 380, 386, 394, 400, 406, 412, 418, 426,
+                          432, 438, 444, 450, 456, 464, 470, 476, 482, 488, 494, 500, 506, 512, 518, 524, 530, 536, 542, 548,
                           554, 560, 566, 570, 576, 582, 588, 592, 600 };
 
 
@@ -203,10 +221,15 @@ bool SDCardStatus = false;
 bool GPSStatus = false;
 bool SSDStatus = false;
 bool HasASensor = false;
-bool KeySwitchedOn = false;
-bool oldKeySwitchedOn = false;
-bool KeyJustSwitchedOn = false;
-bool DriverKeySwitchedOn = false;
+
+bool oldKeyForDisplay = false;
+bool oldKeyStateForDriver = false;
+
+bool RedrawDisplay = false;
+bool RedrawHeader = false;
+bool AllowDriverChange = false;
+
+
 bool ResetAltitude = false;
 bool UseGPSForSpeedDisplay = false;
 float AltitudeOffset = 0.0f;
@@ -216,7 +239,7 @@ bool AutoCurrentCal = true;
 uint8_t Battery1 = 0;
 uint8_t Battery2 = 0;
 
-uint32_t SpeedTimer = 500;
+volatile uint32_t SpeedTimer = 500;
 
 bool AllowCalibrations = false;
 
@@ -302,8 +325,8 @@ uint8_t RaceStatus = RACE_NOTSTARTED;
 float TriggerAmps = 30.0f;  // Minimum amp required to trigger a race start or dirver change
 
 // Speed and Distance Variables
-uint32_t RPMSum = 0.0;
-uint32_t RPMCount = 0;
+volatile uint32_t RPMSum = 0.0;
+volatile uint32_t RPMCount = 0;
 
 uint32_t MinPulses = 3;
 float Revolutions = 0.0;        // counts total to compute Distance
@@ -328,13 +351,13 @@ uint16_t AirDataRate = 0, oAirDataRate = 0;
 uint16_t RadioChannel = 0, oRadioChannel = 0;
 
 //Car Variables
-uint16_t WRPM = 0;  // wheel rpm (measured)
-uint16_t mRPM = 0;  // motor rpm (calculated)
+float WRPM = 0.0f;  // wheel rpm (measured)
+float mRPM = 0.0f;  // motor rpm (calculated)
 uint16_t val = NO_PRESS;
 float vVolts = 0.0f, Volts = 0.0f, MinVolts = DUMMY_MAX;                                                 // computed Volts
 float thmVolts = 0.0f, thxVolts = 0.0f, AmbTemp = 0.0f, MotorTemp = 0.0f, AuxTemp = 0.0f, TempK = 0.0f;  // computed temp values
 float AmbTempCF = 0.0f;
-uint8_t RedrawHeader = false;
+
 float aVolts = 0.0f, Amps = 0.0f, MaxAmps = 0.0f;  // computed Amps
 float tr2 = 0.0f;                                  // computed thermistor resistance
 float Power = 0.0f;                                // computed Power
@@ -798,11 +821,19 @@ void setup() {
   // display big giant errors
   if (RaceStatus == RACE_NOTSTARTED) {
 
-    DisplayErrors();
+    // DisplayErrors();
   }
 
-
   Display.fillScreen(back_color);  //Once done with setup, transition to showing stats
+
+  // get the key state for displaying the correct banner on the display
+  // do this as a last step as key may change during boot up
+  if (digitalRead(KEY_PIN) == HIGH) {  // Detected that key is on
+    banner_back = C_RED;
+  } else {
+    banner_back = C_GREEN;
+    Warnings = Warnings | KEY_OFF;
+  }
 
   WatchDogTimer(ENABLE_WDT);
 
@@ -854,7 +885,9 @@ void loop() {
     }
   }
 
-  ButtonPress();
+  if ((digitalRead(L_PIN) == LOW) || (digitalRead(R_PIN) == LOW)) {
+    ButtonPress();
+  }
 
   if (GPSTolerance != 0) {
     GPSRead();
@@ -868,8 +901,8 @@ void loop() {
 
   //Check if we can update the display and them compute, send, and save
   if (SpeedUpdateTimer >= SpeedTimer) {
-    ComputeSpeed();
     SpeedUpdateTimer = 0;
+    ComputeSpeed();
     RPMSum = 0;
     RPMCount = 0;
   }
@@ -905,34 +938,42 @@ void loop() {
       SpeedTimer = 500;
     }
 
-
     // Check for key state update
     // key state serves 2 purposes 1) display color header on screens 2) auto-driver change
     // hence we need to flags to track each
+
+    // key state for display
     if (digitalRead(KEY_PIN) == HIGH) {  // Detected that key is on
-      banner_back = C_RED;
-      RestoreType = STATUS_OK;
-      KeySwitchedOn = true;
 
-      // for display color
-      if ((!oldKeySwitchedOn) && (KeySwitchedOn)) {
-        KeyJustSwitchedOn = true;
+      if (!oldKeyForDisplay) {
+        RedrawHeader = true;
+        oldKeyForDisplay = true;
+        banner_back = C_RED;
       }
-
-      // for driver change
-      if (!oldKeySwitchedOn) {
-        DriverKeySwitchedOn = true;
-      }
-
     } else {
-      banner_back = C_DKGREEN;
-      KeySwitchedOn = false;
-      RestoreType = STATUS_PITSTOP;
       Warnings = Warnings | KEY_OFF;
-
-      DriverKeySwitchedOn = false;
+      // key is off
+      if (oldKeyForDisplay) {
+        RedrawHeader = true;
+        oldKeyForDisplay = false;
+        banner_back = C_GREEN;
+      }
     }
+
+    // key state for driver change
+    if (digitalRead(KEY_PIN) == HIGH) {  // Detected that key is on
+      if (!oldKeyStateForDriver) {
+        AllowDriverChange = true;
+        oldKeyStateForDriver = true;
+      }
+    } else {
+      // key is off
+      oldKeyStateForDriver = false;
+      AllowDriverChange = false;
+    }
+
     CheckIfStarting();
+
     GetStartGPS();
 
     if (GraphStoreTimer >= 60000l) {
@@ -1048,14 +1089,13 @@ void loop() {
       DriverTime[Driver] = DriverTimer;
     }
 
-    //Switch views upon button press (left or right)
-    // RedrawHeader = false;
-    if ((DisplayID != OldDisplayID) || (oldKeySwitchedOn != KeySwitchedOn)) {
-      RedrawHeader = true;
-      OldDisplayID = DisplayID;
-    }
     // the DriverChange screen is only for when we have a new driver, show the welcome screen.
     if (DriverChangeScreen > 3000) {
+      if (RedrawDisplay) {
+        Display.fillScreen(back_color);
+        RedrawHeader = true;
+        RedrawDisplay = false;
+      }
       switch (DisplayID) {
         case 0:
           TimeView();
@@ -1093,13 +1133,13 @@ void loop() {
     aVolts = 0.0f;
     Counter = 0;
     GPSStatus = false;
-    oldKeySwitchedOn = KeySwitchedOn;
   }
 
   if (RadioUpdate != 0) {
     if (RadioUpdateTimer >= (RadioUpdate * 1000)) {
 
       RadioUpdateTimer = 0;
+
       SendData();
       //since we display data more often than send some, data must get reset here
       Warnings = 0;
@@ -1124,13 +1164,13 @@ void loop() {
 void ComputeSpeed() {
 
   // get car speed from wheel RPM
-  WRPM = 0.0;
+  WRPM = 0.0f;
 
   if (RPMCount >= MinPulses) {
-    WRPM = (60.0f / Pickups) * RPM.countToFrequency(RPMSum / RPMCount);
+    WRPM = (60.0f / (float)Pickups) * RPM.countToFrequency(RPMSum / RPMCount);
   }
-  if ((WRPM > 4000) || (WRPM < 0)) {
-    WRPM = 0;
+  if ((WRPM > 4000.0f) || (WRPM < 0.0f)) {
+    WRPM = 0.0f;
   }
 
   mRPM = WRPM * GearRatio;
@@ -1310,15 +1350,11 @@ void CheckIfStarting() {
 
   if (Amps >= TriggerAmps) {
 
-    if (DriverKeySwitchedOn) {
-
-      DriverKeySwitchedOn = true;
+    if (AllowDriverChange) {
       // test if we are starting from beginning or after a pit
       if (RaceStatus == RACE_NOTSTARTED) {
         // must be start of race
         ShowNewDriverScreen();
-
-
         // RaceStatus is computed from time comparison in the EEPROM to MCU time
         // if RaceStatus then we need to use EEPROM GPS otherwise get the stuff from the eeprom
         RaceStatus = RACE_INPROGRESS;
@@ -1360,13 +1396,13 @@ void CheckIfStarting() {
         LapLEDTimer = 0;
         RedrawHeader = true;
 
-      } else if ((DriverTime[Driver] >= 900000l) && (KeySwitchedOn)) {  // 900000l
-        // reset the key switch flag so we can detect the next pit change
-        // must be driver change
+      } else if (DriverTime[Driver] >= 900000l) {  // 900000l
         ChangeDriver();
         ShowNewDriverScreen();
       }
     }
+    oldKeyStateForDriver = true;
+    AllowDriverChange = false;
   }
 }
 
@@ -1380,6 +1416,7 @@ void ShowNewDriverScreen() {
   Display.setFont(FONT_24BI);
   Display.setTextColor(fore_color, back_color);
   Display.print(F("Driver: "));
+
   if (DriverID[Driver] < ((sizeof(DriverNames) / sizeof(DriverNames[0])))) {
     Display.print(DriverNames[DriverID[Driver]]);
   }
@@ -1391,6 +1428,7 @@ void ShowNewDriverScreen() {
 
   // start the screen timer
   RedrawHeader = true;
+  RedrawDisplay = true;
   DriverChangeScreen = 0;
   DrawGraph = true;
 }
@@ -1472,7 +1510,7 @@ void AddNewRecordset() {
 
 void SendData() {
 
-  Data.RPM = (uint16_t)(mRPM & 0b0000111111111111);
+  Data.RPM = (uint16_t)mRPM & 0b0000111111111111;
 
   Data.WARNINGS = (uint16_t)(Warnings);
   Data.TEMPF_TEMPX = ((uint16_t)MotorTemp << 8) | (((uint16_t)AuxTemp) & 0b0000000011111111);
@@ -1493,9 +1531,10 @@ void SendData() {
   } else {
     Data.RACETIME = (uint16_t)(CarRaceTimer / 1000);  // data stored in ms
   }
-  Data.D0TIME = (uint16_t)(DriverTime[0] / 1000);  // data stored in ms
-  Data.D1TIME = (uint16_t)(DriverTime[1] / 1000);
-  Data.D2TIME = (uint16_t)(DriverTime[2] / 1000);
+
+  Data.D0TIME_ALTITUDE = (uint16_t)(DriverTime[0] / 1000) << 4 | ((uint16_t) Altitude >> 8) & 0b0000000000001111;  // msb
+  Data.D1TIME_ALTITUDE = (uint16_t)(DriverTime[1] / 1000) << 4 | ((uint16_t) Altitude >> 4) & 0b0000000000001111;
+  Data.D2TIME_ALTITUDE = (uint16_t)(DriverTime[2] / 1000) << 4 | ((uint16_t) Altitude) & 0b0000000000001111;;
 
   // lap time (LT) data stored in seconds
   Data.LT = LapTime;
@@ -2106,15 +2145,15 @@ void RestartDisplay() {
     return;
   }
   Display.begin();
-
   SetScreenParameters();
+  RedrawHeader = true;
 }
 
 void SpeedView() {
 
 
   if (RedrawHeader) {
-    Display.fillScreen(back_color);
+    //Display.fillScreen(back_color);
     Display.fillRect(0, 0, 320, 38, banner_back);
     Display.setCursor(10, 10);
     Display.setTextColor(C_WHITE);
@@ -2151,7 +2190,7 @@ void SpeedView() {
 
   Display.setCursor(240, 202);
   ffWRPM.setTextColor(fore_color, back_color);
-  ffWRPM.print(WRPM);
+  ffWRPM.print(WRPM, 0);
 }
 
 /*
@@ -2163,7 +2202,7 @@ void SpeedView() {
 
 void AmpsView() {
   if (RedrawHeader) {
-    Display.fillScreen(back_color);
+    //Display.fillScreen(back_color);
     Display.setFont(FONT_16B);
     Display.fillRect(0, 0, 320, 38, banner_back);
     Display.setCursor(10, 10);
@@ -2217,13 +2256,12 @@ void AmpsView() {
 
 void VoltsView() {
   if (RedrawHeader) {
-    Display.fillScreen(back_color);
+    //Display.fillScreen(back_color);
     Display.setFont(FONT_16B);
     Display.fillRect(0, 0, 320, 38, banner_back);
     Display.setCursor(10, 10);
     Display.setTextColor(C_WHITE);
     Display.print(F("VOLTS"));
-
     RedrawHeader = false;
   }
 
@@ -2257,16 +2295,12 @@ void VoltsView() {
 void EnergyView() {
 
   if (RedrawHeader) {
-    Display.fillScreen(back_color);
-    DrawGraph = true;
     Display.setFont(FONT_16B);
     Display.fillRect(0, 0, 320, 38, banner_back);
     Display.setCursor(10, 10);
     Display.setTextColor(C_WHITE);
     Display.print(F("TREND"));
-
     EnergyG.setYAxis(0, (((int)((TotalEnergy + 99.0f) / 100)) * 100), 100);
-
     RedrawHeader = false;
   }
 
@@ -2307,16 +2341,17 @@ void EnergyView() {
 void GForceView() {
 
   if (RedrawHeader) {
-    Display.fillScreen(back_color);
     Display.setFont(FONT_16B);
     Display.fillRect(0, 0, 320, 38, banner_back);
     Display.setCursor(10, 10);
     Display.setTextColor(C_WHITE);
     Display.print(F("G-Force"));
-    GForceG.drawGraph();
     RedrawHeader = false;
   }
-
+  if (DrawGraph) {
+    DrawGraph = false;
+    GForceG.drawGraph();
+  }
   GForceXPoint++;
   GForceG.setX(GForceXPoint);
   GForceG.plot(GForceXID, GForceX);
@@ -2335,14 +2370,16 @@ void GForceView() {
 
 void TempView() {
   if (RedrawHeader) {
-    Display.fillScreen(back_color);
+    //Display.fillScreen(back_color);
     Display.setFont(FONT_16B);
     Display.fillRect(0, 0, 320, 38, banner_back);
     Display.setCursor(10, 10);
     Display.setTextColor(fore_color);
     Display.print(F("TEMP"));
     RedrawHeader = false;
-
+  }
+  if (DrawGraph) {
+    DrawGraph = false;
     MotorTempG.refresh();
     AuxTempG.refresh();
     AmbTempG.refresh();
@@ -2384,12 +2421,11 @@ void TempView() {
 void TimeView() {
 
   if (RedrawHeader) {
-    Display.fillScreen(back_color);
+    //Display.fillScreen(back_color);
     Display.setFont(FONT_16B);
     Display.fillRect(0, 0, 320, 38, banner_back);
     Display.setCursor(10, 10);
     Display.setTextColor(C_WHITE);
-
     Display.print(F("TIME"));
     RedrawHeader = false;
   }
@@ -2436,132 +2472,6 @@ void TimeView() {
   Display.setCursor(DATA_X, DATA_Y + 50);
   Display.setFont(FONT_100BINO);
   ffThisLap.print(str);
-
-
-  /*
-  Display.setFont(FONT_14);
-  Display.setTextColor(fore_color);
-
-  //Left Side
-  Display.drawRect(13, 50, 65, 50, fore_color);
-  Display.drawRect(83, 50, 70, 50, fore_color);
-  Display.drawRect(13, 105, 140, 105, fore_color);
-
-  Display.setCursor(18, 55);
-  Display.print(F("LAP"));
-
-  Display.setCursor(93, 55);
-  Display.print(F("Dist."));
-
-  Display.setCursor(18, 110);
-  Display.print(F("RACE TIME"));
-
-  Display.setCursor(18, 161);
-  Display.print(F("SEAT TIME"));
-
-  //Right Side
-  Display.setTextColor(fore_color);
-  Display.drawRect(160, 50, 159, 160, fore_color);
-
-  Display.setCursor(165, 55);
-  Display.print(F("LAP TIME"));
-
-  Display.setCursor(165, 140);
-  Display.print(F("LAP SPLIT"));
-
-  // Show Data
-
-  Display.setFont(FONT_24BI);
-
-  //Lap Count
-  Display.setCursor(18, 70);
-  ffLaps.setTextColor(fore_color, back_color);
-  ffLaps.print(LapCount);
-
-  //car distance from start coordinates
-  Display.setCursor(93, 70);
-  ffDriver.setTextColor(fore_color, back_color);
-  // reminder, distance is in meters, so convert
-  if ((GPSDistance * METERS_TO_FEET) < 99.0) {
-    ffDriver.print(GPSDistance * METERS_TO_FEET, 0);
-  } else {
-    ffDriver.print(0);
-  }
-
-  //driver time
-  Display.setCursor(18, 180);
-  ffDriverTime.setTextColor(fore_color, back_color);
-  if (RaceStatus == RACE_INPROGRESS) {
-    m = (int)(DriverTime[Driver] / 1000) / 60;
-    s = (int)(DriverTime[Driver] / 1000) % 60;
-    sprintf(str, "%02d:%02d", m, s);
-  } else {
-    strcpy(str, "00:00");
-  }
-  ffDriverTime.print(str);
-
-  //Race Time
-  if (RaceStatus == RACE_INPROGRESS) {
-    m = (int)(CarRaceTimer / 1000) / 60;
-    s = (int)(CarRaceTimer / 1000) % 60;
-    sprintf(str, "%02d:%02d", m, s);
-  }
-  Display.setCursor(18, 128);
-  ffCarRaceTimer.setTextColor(fore_color, back_color);
-  ffCarRaceTimer.print(str);
-
-  Display.setTextColor(C_PINK);
-
-  // Lap time
-  if (RaceStatus == RACE_NOTSTARTED) {
-    strcpy(str, "00:00");
-  }
-  if (RaceStatus == RACE_INPROGRESS) {
-    m = LapTime / 60;
-    s = LapTime % 60;
-    sprintf(str, "%02d:%02d", m, s);
-  } else if (RaceStatus == RACE_FINISHED) {
-    strcpy(str, "DONE");
-  }
-
-  Display.setCursor(165, 80);
-  ffThisLap.setTextColor(fore_color, back_color);
-  ffThisLap.print(str);
-
-  //Lap Split
-
-  TimeSplit = LapTime - LastLapTime;
-  if (LapCount > 0) {
-    if (RaceStatus == RACE_NOTSTARTED) {
-      strcpy(str, " ");
-    }
-    if (RaceStatus == RACE_INPROGRESS) {
-      if (TimeSplit > 0) {
-        m = (TimeSplit / 1000) / 60;
-        s = (TimeSplit / 1000) % 60;
-        sprintf(str, "+%1d:%02d", m, s);
-        ffSplitLap.setTextColor(C_RED, back_color);
-
-      } else if (TimeSplit < 0) {
-        ffLaps.setTextColor(C_GREEN, back_color);
-        TimeSplit = abs(TimeSplit);
-        m = (TimeSplit / 1000) / 60;
-        s = (TimeSplit / 1000) % 60;
-        sprintf(str, "-%1d:%02d", m, s);
-        ffSplitLap.setTextColor(C_GREEN, back_color);
-      } else {
-        ffSplitLap.setTextColor(C_YELLOW, back_color);
-        strcpy(str, "0:00");
-      }
-    } else if (RaceStatus == RACE_FINISHED) {
-      strcpy(str, " ");
-      ffSplitLap.setTextColor(C_GREEN, back_color);
-    }
-    Display.setCursor(165, 165);
-    ffSplitLap.print(str);
-  }
-
-  */
 }
 
 /*
@@ -2574,7 +2484,7 @@ void TimeView() {
 void UsageView() {
 
   if (RedrawHeader) {
-    Display.fillScreen(back_color);
+    //Display.fillScreen(back_color);
     Display.setFont(FONT_16B);
     Display.fillRect(0, 0, 320, 38, banner_back);
     Display.setCursor(10, 10);
@@ -2957,9 +2867,8 @@ bool RestoreEBYTEDefaults() {
 #endif
   Radio.SetAddressH(0);
   Radio.SetAddressL(0);
-  Radio.SetSpeed(0b00011000);
-  Radio.SetChannel(5);
-  Radio.SetAirDataRate(0b100);
+  Radio.SetSpeed(0b00011100);
+  Radio.SetChannel(1);
   Radio.SetOptions(0b01000100);
   Radio.SaveParameters(PERMANENT);
 #ifdef DO_DEBUG
@@ -3070,30 +2979,29 @@ void ButtonPress() {
 
   //main menu trigger
   if (digitalRead(RPin) == LOW) {
-
-
     val = Debounce(RPin, ButtonDebounce);
 
     if (val == LONG_PRESS) {
-
       if (digitalRead(LPin) == LOW) {
         ChangeDriver();
         ShowNewDriverScreen();
 
       } else {
-
         ProcessMainMenu();
-        RedrawHeader = true;
       }
+      RedrawHeader = true;
+      RedrawDisplay = true;
     } else if (val == SHORT_PRESS) {
-
-      DrawGraph = true;
+      RedrawHeader = true;
+      RedrawDisplay = true;
       DisplayID++;
       if (DisplayID > 7) {
         DisplayID = 0;
       }
     }
     DrawGraph = true;
+    EEPROM.put(320, DisplayID);
+    delay(50);
   }
 
   else if (digitalRead(LPin) == LOW) {
@@ -3106,20 +3014,21 @@ void ButtonPress() {
       } else {
 
         ProcessMainMenu();
-        RedrawHeader = true;
       }
+      RedrawHeader = true;
+      RedrawDisplay = true;
     } else if (val == SHORT_PRESS) {
-
+      RedrawHeader = true;
+      RedrawDisplay = true;
       if (DisplayID == 0) {
-        DrawGraph = true;
         DisplayID = 8;
       }
       DisplayID--;
     }
 
+    DrawGraph = true;
     EEPROM.put(320, DisplayID);
     delay(50);
-    DrawGraph = true;
   }
 }
 
@@ -6869,23 +6778,10 @@ void InitializeSensors() {
 
   RadioStatus = Radio.init();
 
-  /*
-  Serial.print("DID not fire up ");Serial.println(RadioStatus);
-
-  Radio.SetAddressH(0);
-  Radio.SetAddressL(0);
-  Radio.SetOptions(0b01000100);
-  Radio.SetAirDataRate(0b100);
-  Radio.SetUARTBaudRate(0b011);
-  Radio.SetChannel(15);
-  Radio.SaveParameters(PERMANENT);
-  Radio.PrintParameters();
-  Serial.println(Radio.GetModel(), HEX);
-*/
-
   DataPacket.begin(details(Data), &ESerial);
 
   if ((!RadioStatus) || (Radio.GetModel() != 0x44)) {
+    RestoreEBYTEDefaults();
     Display.setTextColor(C_RED);
     Display.setCursor(STATUS_RESULT, 160);
     Display.print(F("FAIL"));
