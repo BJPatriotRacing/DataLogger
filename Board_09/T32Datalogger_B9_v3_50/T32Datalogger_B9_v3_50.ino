@@ -29,12 +29,6 @@
 */
 
 
-/*---------------------------------------------------------*/
-//INITIALIZATION
-/*---------------------------------------------------------*/
-
-
-
 /*-------------------*/
 // Libraries
 /*-------------------*/
@@ -63,7 +57,6 @@
 #include <Adafruit_BME280.h>   // altimiter lib      https://github.com/adafruit/Adafruit_BME280_Library
 #include "MPU6050.h"           // accelerometer lib  https://github.com/ElectronicCats/mpu6050
 #include <FreqMeasureMulti.h>  // lib for speed sensor https://github.com/PaulStoffregen/FreqMeasureMulti
-#include <InternalTemperature.h>
 
 /*
 FreqMeasureMulti.h
@@ -91,7 +84,7 @@ line 125 value (type is now global)
 // Code Version
 /*-------------------*/
 
-#define CODE_VERSION "B9_v3.50"
+#define CODE_VERSION "B9_v3.51"
 
 #define SEALEVELPRESSURE_HPA 1013.25
 #define GRAPH_X 45
@@ -307,7 +300,7 @@ volatile uint32_t Counter = 0;  // the number of measurements between each displ
 uint32_t AverageCounter = 0;
 
 //Transceiver Variables
-float TargetAmps = 0.0f;
+float TargetAmps = 0.0f, TempTargetAmps = 0.0f;
 float ERem = 100.0f, TRem = 100.0f;  // Energy and Time remaining
 
 uint32_t StartPage = 0;
@@ -349,7 +342,7 @@ uint8_t LapCount = 0;
 uint32_t AverageCount = 0;
 float LapAmps = 0.0, LapVolts = 0.0f, AverageAmps = 0.0f;
 float AverageVolts = 0.0f, LapEnergy = 0.0f, StartLapEnergy = 0.0f;
-float iTemp = 0.0f, iPressure = 0.0f, Altitude = 0.0f, Humidity = 0.0f;
+float iTemp = 0.0f, iPressure = 0.0f, Pressure = 0.0f, Altitude = 0.0f, Humidity = 0.0f;
 
 uint8_t StartGPSDelayID = 0;
 uint32_t StartGPSDelay = 0;
@@ -492,6 +485,7 @@ FreqMeasureMulti RPM;
    NOTES : Runs at the beginning of turning on power
 */
 
+
 void setup() {
 
   //Serial.begin(115200);
@@ -516,6 +510,12 @@ void setup() {
   StartRTC();
 
   Wire.begin();
+
+  Wire.setClock(400000);
+  //while(1){
+  //  scanI2C();
+  //}
+
 
   SSDStatus = SSD.init();
 
@@ -668,8 +668,8 @@ void setup() {
       Display.fillRoundRect(STATUS_RESULT, 180, 160, 18, 2, C_DKGREEN);
       Display.fillRoundRect(STATUS_RESULT, 180, ((float)(UsedSpace * 160.0) / CARD_SIZE) + 2, 18, 2, C_GREEN);
     } else {
-      Display.fillRoundRect(STATUS_RESULT, 180, 160, 185, 2, C_DKRED);
-      Display.fillRoundRect(STATUS_RESULT, 180, ((float)(UsedSpace * 160.0) / CARD_SIZE) + 2, 18, 2, C_RED);
+      Display.fillRoundRect(STATUS_RESULT, 180, 160, 18, 2, C_RED);
+      //Display.fillRoundRect(STATUS_RESULT, 180, ((float)(UsedSpace * 160.0) / CARD_SIZE) + 2, 18, 2, C_RED);
       SSDStatus = false;
     }
   }
@@ -721,7 +721,7 @@ void setup() {
     Display.setFont(FONT_14);
     Display.setTextColor(C_CYAN);
     Display.setCursor(STATUS_RESULT, 200);
-    Display.print(F("CURRENT"));
+    Display.print(F("Current Race"));
 
     ReturnCode = RestoreRaceData();
 
@@ -737,10 +737,10 @@ void setup() {
       Display.setFont(FONT_14);
       Display.setTextColor(C_CYAN);
       Display.setCursor(STATUS_RESULT, 220);
-      Display.print(F("NEW: "));
+      Display.print(F("New Race"));
 
       RecordSETID++;
-      Display.print(RecordSETID);
+      //Display.print(RecordSETID);
       RaceStatus = RACE_NOTSTARTED;
       ResetRaceDate();
       SaveStartGPS(false);
@@ -768,25 +768,25 @@ void setup() {
     Display.setFont(FONT_14);
     Display.setTextColor(C_CYAN);
     Display.setCursor(STATUS_RESULT, 200);
-    Display.print(F("NEW"));
+    Display.print(F("New Race"));
 
     Display.setCursor(STATUS_RESULT, 220);
     ResetRaceDate();
     SaveStartGPS(false);
 
     if (SSDStatus) {
-      Display.print(F("RecordSETID: "));
       Display.print(RecordSETID);
     } else {
-      Display.setCursor(5, 220);
+      Display.setCursor(STATUS_RESULT, 220);
       Display.setTextColor(C_RED);
-      Display.print(F("SDD FAILED"));
+      Display.print(F("SSD FULL"));
+       Warnings = Warnings | SSD_FAIL;
     }
 
 #ifdef DO_DEBUG
     Serial.println("New Race.");
     Serial.print("RecordSETID: ");
-    Serial.println(RecordSETID);
+    //Serial.println(RecordSETID);
 #endif
   }
 
@@ -816,7 +816,6 @@ void setup() {
   GPSMaxReadTimer = 0;
   SpeedUpdateTimer = 0;
   RedrawHeader = true;
-
 }
 
 /*
@@ -926,7 +925,7 @@ void loop() {
       if (GPSTolerance > 0) {
         CheckIfLap();
       }
-      // now that we have found the offset recompute the altitue
+      // now that we have found the offset recompute the altitude
       Altitude = Altitude + AltitudeOffset;
       RecordType = RT_DATA;
       if (SSD.addRecord()) {
@@ -960,14 +959,22 @@ void loop() {
     if (Volts < BatWarning) {
       Warnings = Warnings | BAT_WARNING;
     }
-    if ((Amps < -2.0f) || (Amps > 70.0) || (LapAmps > 19.0)) {
+    if (Amps > 25.0) {
       Warnings = Warnings | AMP_WARNING;
     }
+    if (LapAmps > 19.0) {
+      Warnings = Warnings | LAPAMP_WARNING;
+    }
+
     if ((GForce > 2.0) || (!GForceStatus)) {
       Warnings = Warnings | GFORCE_WARNING;
     }
 
     if ((MotorTemp > TempWarning) | (MotorTemp < 10.0f)) {
+      Warnings = Warnings | TEMP_WARNING;
+    }
+
+    if ((AuxTemp > TempWarning) | (AuxTemp < 10.0f)) {
       Warnings = Warnings | TEMP_WARNING;
     }
 
@@ -1202,31 +1209,56 @@ void ComputeData() {
     }
   }
 
-  // AltimiterStatus = BMEsensor.begin(0x76);
   if (AltimiterStatus) {
-
     AmbTemp = (BMEsensor.readTemperature() * 1.8) + 32.0 + AmbTempCF;
-
     // option to offset the altitude based on initial reading at a known elevation (the start)
     // since barametric pressure drifts, so does altitude
     // at start get StartAltitude, and if option is set compute AltitudeOffset
 
-    Altitude = BMEsensor.readAltitude(SEALEVELPRESSURE_HPA);
     Humidity = BMEsensor.readHumidity();
+    Pressure = 44330.0f * (1.0f - pow((BMEsensor.readPressure() / 100.0f) / SEALEVELPRESSURE_HPA, 0.1903));
+    Altitude = Pressure * METERS_TO_FEET;
 
-    // if we ever want to use the accelerometer to read ambient
-    // AmbTemp = (((ASensor.getTemperature() / 340.0) + 36.53) * 1.8) + 32.0 + AmbTempCF;
-    // Serial.println(AmbTemp);
-
-    Altitude = Altitude * METERS_TO_FEET;
-
+    /*
+    Serial.println("________________");
+    Serial.print(AltimiterStatus);
+    Serial.print(", ");
+    Serial.print(AltitudeOffset);
+    Serial.print(", ");
+    Serial.print(StartAltitude);
+    Serial.print(", ");
+    Serial.print(Humidity);
+    Serial.print(", ");
+    Serial.print(BMEsensor.readPressure());
+    Serial.print(", ");
+    Serial.print(Altitude);
+    Serial.print(", ");
+    Serial.print(AmbTemp);
+    Serial.print(", ");
+    Serial.print(StartGPSFound);
+    Serial.print(", ");
+    Serial.print(GPSStartLat);
+    Serial.print(", ");
+    Serial.println(GPSStartLon);
+    */
     if (Altitude > 10000.0f) {
       Altitude = 0.0f;
     }
+
+    if (Altitude < 0) {
+      Warnings = Warnings | AMBIENT_FAIL;
+      AltimiterStatus = false;
+    }
+  } else {
+    Altitude = GPSAltitude;
+    AltimiterStatus = BMEsensor.begin(0x76);
   }
 
   if (HasASensor) {
-
+    if (!AltimiterStatus) {
+      // if we ever want to use the accelerometer to read ambient
+      AmbTemp = (((ASensor.getTemperature() / 340.0) + 36.53) * 1.8) + 32.0 + AmbTempCF;
+    }
     GForceZ = ASensor.getAccelerationZ() / ASensorBits;
     if (ASensorDirection == 0) {
       // usb forward means +x is to reverse (hence flip, same for lateral)
@@ -1281,7 +1313,7 @@ void GetStartGPS() {
 void CheckIfStarting() {
 
   // test if we are starting from beginning or after a pit
-  if (1 == 1) { // if (RaceStatus == RACE_NOTSTARTED) {
+  if (RaceStatus == RACE_NOTSTARTED) {
     // must be start of race
     ShowNewDriverScreen();
     // RaceStatus is computed from time comparison in the EEPROM to MCU time
@@ -1381,6 +1413,7 @@ void SaveStartGPS(bool Action) {
       GPSStartLat = GPSLat;
       GPSStartLon = GPSLon;
       StartGPSFound = true;
+      // need to get
       EEPROM.put(340, GPSStartLat);
       EEPROM.put(350, GPSStartLon);
       delay(10);
@@ -1435,11 +1468,12 @@ void AddNewRecordset() {
 void SendData() {
 
   // datalogger Device ID is 0, for all cars, repeaters are 1-3 hence LSB 0 and 1 are both 0
-  Data.RPM_DNO_DID = (((uint16_t)mRPM & 0b0000111111111111) << 4) | ((Driver & 0b0000000000000011) << 2);
+  Data.RPM_DNO_DID = ((uint16_t)mRPM << 4) | ((Driver & 0b0000000000000011) << 2);
   Data.RPM_DNO_DID = Data.RPM_DNO_DID & 0b1111111111111100;
   Data.WARNINGS = (uint16_t)(Warnings);
   Data.TEMPF_TEMPX = ((uint16_t)MotorTemp << 8) | (((uint16_t)AuxTemp) & 0b0000000011111111);
   Data.VOLTS_LAPS = ((uint16_t)(Volts * 10.0f)) << 7 | (((uint16_t)LapCount) & 0b0000000001111111);
+
   Data.SPEED_EREM = ((uint16_t)(CarSpeed * 10.0f)) << 7 | (((uint16_t)ERem) & 0b0000000001111111);
   Data.DISTANCE_TREM = ((uint16_t)(Distance * 10.0f)) << 7 | (((uint16_t)TRem) & 0b0000000001111111);
 
@@ -1458,10 +1492,9 @@ void SendData() {
   } else {
     Data.RACETIME = (uint16_t)(CarRaceTimer / 1000);  // data stored in ms
   }
-
-  Data.D0TIME_ALTITUDE = (uint16_t)(DriverTime[0] / 1000) << 4 | (((uint16_t)Altitude >> 8) & 0b0000000000001111);  // msb
-  Data.D1TIME_ALTITUDE = (uint16_t)(DriverTime[1] / 1000) << 4 | (((uint16_t)Altitude >> 4) & 0b0000000000001111);
-  Data.D2TIME_ALTITUDE = (uint16_t)(DriverTime[2] / 1000) << 4 | (((uint16_t)Altitude) & 0b0000000000001111);
+  Data.D0TIME_ALTITUDE = (((uint16_t)(DriverTime[0] / 1000) << 4) | (((uint16_t)Altitude >> 8) & 0b0000000000001111));  // msb
+  Data.D1TIME_ALTITUDE = (((uint16_t)(DriverTime[1] / 1000) << 4) | (((uint16_t)Altitude >> 4) & 0b0000000000001111));
+  Data.D2TIME_ALTITUDE = (((uint16_t)(DriverTime[2] / 1000) << 4) | (((uint16_t)Altitude) & 0b0000000000001111));
 
   // lap time (LT) data stored in seconds
   Data.LT = LapTime;
@@ -2696,6 +2729,9 @@ void DrawWarnings() {
 
 void CheckIfLap() {
 
+
+
+
   if ((StartGPSFound) && (GPSDistance <= GPSTolerance) && (RaceStatus == RACE_INPROGRESS) && (GPSLapTimer >= (1000l * LapThreashold))) {
 
     // we just tiggered get averages
@@ -2714,11 +2750,11 @@ void CheckIfLap() {
 
     if ((LapCount > 1) && (LapCount < 4)) {
       // using laps 2 and 3
-      TargetAmps += LapAmps;
+      TempTargetAmps += LapAmps;
     }
 
     if (LapCount == 5) {
-      TargetAmps = TargetAmps / 2.0;
+      TargetAmps = TempTargetAmps / 2.0;
     }
 
     LastLapTime = LapTime;
@@ -3204,7 +3240,7 @@ void CreateUserInterface() {
   RaceMenuOption9 = RaceMenu.addNI("Battery 2", Battery2, 1, 99, 1);
   RaceMenuOption10 = RaceMenu.addNI("Add lap when pitting", AddLapInPit, 0, sizeof(YesNoText) / sizeof(YesNoText[0]), 1, 0, YesNoText);
   RaceMenuOption12 = RaceMenu.addNI("Delay GPS start read", StartGPSDelayID, 0, sizeof(GPSReadTimeText) / sizeof(GPSReadTimeText[0]), 1, 0, GPSReadTimeText);
- 
+
   RaceMenu.setTitleColors(MENU_TITLETEXT, MENU_TITLEBACK);
   RaceMenu.setItemTextMargins(2, 3, 5);
   RaceMenu.setMenuBarMargins(1, 319, 3, 1);
@@ -3220,7 +3256,7 @@ void CreateUserInterface() {
   TelemetryMenuOption5 = TelemetryMenu.addNI("Car", CarID, 0, sizeof(CarText) / sizeof(CarText[0]), 1, 0, CarText);
   TelemetryMenuOption6 = TelemetryMenu.addNI("Trigger amps", TriggerAmps, 20, 90, 5, 0);
   TelemetryMenuOption9 = TelemetryMenu.addNI("Restart display each draw", RestartDisplayAlways, 0, sizeof(YesNoText) / sizeof(YesNoText[0]), 1, 0, YesNoText);
- 
+
   TelemetryMenu.setTitleColors(MENU_TITLETEXT, MENU_TITLEBACK);
   TelemetryMenu.setItemTextMargins(2, 3, 5);
   TelemetryMenu.setMenuBarMargins(1, 319, 3, 1);
@@ -3590,7 +3626,7 @@ void ProcessRaceMenu() {
   AddLapInPit = (bool)RaceMenu.value[RaceMenuOption10];
   TirePressure = (uint8_t)RaceMenu.value[RaceMenuOption11];
   StartGPSDelayID = (uint8_t)RaceMenu.value[RaceMenuOption12];
-  
+
   EEPROM.put(10, MotorSprocket);
   EEPROM.put(20, WheelSprocket);
   EEPROM.put(30, TireID);
@@ -3911,28 +3947,27 @@ void ProcessSensorMenu() {
   RPMCount = 0;
   MenuOption = 1;
 
-  InternalTemperature.begin(TEMPERATURE_NO_ADC_SETTING_CHANGES);
-
   SensorMenu.draw();
 
   Display.fillRect(0, 138, 319, 101, C_DKGREY);
   Display.setTextColor(C_WHITE);
 
   Display.setCursor(5, 140);
-  Display.print(F("Alt i/GPS"));
+  Display.print(F("Alt. BME / GPS"));
 
   Display.setCursor(5, 160);
-  Display.print(F("Volts @A9"));
+  Display.print(F("Volts Pin: "));
+  Display.print(VM_PIN);
 
   Display.setCursor(5, 180);
-  Display.print(F("Amps @A3"));
+  Display.print(F("Amps Pin: "));
+  ;
+  Display.print(AM_PIN);
 
   Display.setCursor(5, 200);
-  Display.print(F("T M/X/A/I"));
+  Display.print(F("Tf M / X / A"));
   Display.setCursor(5, 220);
   Display.print(F("WRPM / Pulse"));
-
-  float InternalTemp = InternalTemperature.readTemperatureF();
 
   while ((digitalRead(LPin) == LOW) || (digitalRead(RPin) == LOW)) {
     delay(10);
@@ -3968,26 +4003,21 @@ void ProcessSensorMenu() {
       Altitude = BMEsensor.readAltitude(SEALEVELPRESSURE_HPA) * METERS_TO_FEET;
 
       GPSAltitude = GPS.altitude.meters() * METERS_TO_FEET;
-
-      Display.setCursor(140, 140);
       Display.setTextColor(C_YELLOW, C_DKGREY);
+      Display.setCursor(140, 140);
+
       Display.print(Altitude, 1);
       Display.setCursor(240, 140);
-      Display.setTextColor(C_CYAN, C_DKGREY);
       Display.print(GPSAltitude, 1);
 
       Display.setCursor(140, 160);
-      Display.setTextColor(C_YELLOW, C_DKGREY);
       Display.print(Volts, 2);
       Display.setCursor(240, 160);
-      Display.setTextColor(C_CYAN, C_DKGREY);
       Display.print(vVolts, 3);
 
       Display.setCursor(140, 180);
-      Display.setTextColor(C_YELLOW, C_DKGREY);
       Display.print(Amps, 3);
       Display.setCursor(240, 180);
-      Display.setTextColor(C_CYAN, C_DKGREY);
       Display.print(aVolts, 3);
 
       // compute motor temperature
@@ -4006,9 +4036,8 @@ void ProcessSensorMenu() {
       }
 
       Display.setCursor(140, 200);
-      Display.setTextColor(C_YELLOW, C_DKGREY);
       Display.print(MotorTemp, 1);
-      Display.print(F("/"));
+      Display.print(F(" / "));
 
       // compute motor temperature
       thxVolts = thxVolts / Counter;
@@ -4026,17 +4055,12 @@ void ProcessSensorMenu() {
       }
 
       Display.print(AuxTemp, 1);
-      Display.print(F("/"));
+      Display.print(F(" / "));
       Display.print((BMEsensor.readTemperature() * 1.8) + 32.0 + AmbTempCF, 1);
 
-      Display.print(F("/"));
-      Display.print(InternalTemp, 0);
-
       Display.setCursor(140, 220);
-      Display.setTextColor(C_YELLOW, C_DKGREY);
       Display.print(WRPM);
       Display.setCursor(240, 220);
-      Display.setTextColor(C_CYAN, C_DKGREY);
       Display.print(RPMCount);
 
       // need to get volts / amps and display
@@ -6510,19 +6534,15 @@ void SetupAccelerometer() {
   delay(50);
 }
 
-/*
 
-function to setup most devices some (display and flash chip) must be started early in setup
+/*---------------------------------------------------------*/
+//INITIALIZATION
+/*---------------------------------------------------------*/
 
-*/
 void InitializeSensors() {
-
-  bool status = false;
-
 
   analogReadRes(12);
   analogReadAveraging(4);
-  // analogReference(INTERNAL);
 
   // init the accelerometer
   Display.setCursor(STATUS_RESULT, 40);
@@ -6604,7 +6624,7 @@ void InitializeSensors() {
   }
 
   // get current draw
-  //aVolts = analogRead(AM_PIN);
+  // aVolts = analogRead(AM_PIN);
   // aVolts = aVolts / (BIT_CONVERSION / REFERENCE_VOLTAGE);
   Amps = ((aVolts - VMid) * 1000.0f) / mVPerAmp;
 
@@ -6615,23 +6635,22 @@ void InitializeSensors() {
     Display.print(Amps, 3);
   }
 
-  status = false;
-
-  status = BMEsensor.begin(0x76);
+  AltimiterStatus = BMEsensor.begin(0x76);
   //BMEsensor.setSampling();
-  delay(500);
+  delay(100);
   Display.setCursor(STATUS_RESULT, 80);
 
-  if (!status) {
+  if (!AltimiterStatus) {
     Display.setTextColor(C_RED);
     Display.print(F("0 / 0 / 0"));
-    AltimiterStatus = false;
+
     Warnings = Warnings | AMBIENT_FAIL;
   } else {
-    AltimiterStatus = true;
+
     // get starting condidtions, save to SSD in the header field
     iTemp = (BMEsensor.readTemperature() * 1.8) + 32.0 + AmbTempCF;
     Altitude = BMEsensor.readAltitude(SEALEVELPRESSURE_HPA) * METERS_TO_FEET;
+
     iPressure = BMEsensor.readPressure();
     Humidity = BMEsensor.readHumidity();
 
@@ -7180,9 +7199,9 @@ void DisplayErrors() {
     Display.setFont(FONT_16B);
 
     Display.setCursor(40, 80);
-    Display.print("DOWNLOAD AND");
+    Display.print("SSD CHIP FULL");
     Display.setCursor(40, 110);
-    Display.print("ERASE SSD CHIP");
+    Display.print("DOWNLOAD, ERASE");
 
     WaitForExit();
   }
